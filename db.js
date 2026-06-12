@@ -10,6 +10,12 @@ const pool = new Pool({
   idleTimeoutMillis: 30000       
 });
 
+// --- THE SHOCK ABSORBER ---
+// This stops Node.js from crashing when Neon goes to sleep
+pool.on('error', (err, client) => {
+  console.error('Neon DB hung up on an idle connection (this is normal):', err.message);
+});
+
 pool.connect()
   .then(() => {
     console.log('✅ PostgreSQL connected')
