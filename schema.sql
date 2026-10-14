@@ -7,6 +7,32 @@
 -- Enable PostGIS extension if available (optional, falls back to Haversine)
 -- CREATE EXTENSION IF NOT EXISTS postgis;
 
+-- ── Danger zones table (output of DBSCAN) ───────────────────────
+CREATE TABLE IF NOT EXISTS danger_zones (
+  id              SERIAL PRIMARY KEY,
+  cluster_id      INTEGER UNIQUE NOT NULL,
+  center_lat      DECIMAL(10, 7) NOT NULL,
+  center_lng      DECIMAL(10, 7) NOT NULL,
+  hazard_type     VARCHAR(30) NOT NULL,          -- Most common hazard type in cluster
+  report_count    INTEGER NOT NULL DEFAULT 0,
+  severity        VARCHAR(20) NOT NULL DEFAULT 'verified'
+                    CHECK (severity IN ('verified','critical')),
+  status          VARCHAR(20) NOT NULL DEFAULT 'open'
+                    CHECK (status IN ('open','complaint_sent','under_repair','resolved')),
+  complaint_pdf_url TEXT,                        -- Path to generated PDF
+  location_name   TEXT,                          -- Location name of danger zone
+  complaint_sent_at TIMESTAMPTZ,
+  resolved_at     TIMESTAMPTZ,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_danger_zones_location
+  ON danger_zones (center_lat, center_lng);
+
+CREATE INDEX IF NOT EXISTS idx_danger_zones_status
+  ON danger_zones (status);
+
 -- ── Reports table ────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS reports (
   id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -17,9 +43,29 @@ CREATE TABLE IF NOT EXISTS reports (
                     CHECK (hazard_type IN ('pothole','speedbreaker','blindcurve','lighting','collapse')),
   photo_url       TEXT,                          -- Relative path to uploaded photo
   phone           VARCHAR(15),                   -- Optional reporter phone
+  location_name   TEXT,                          -- Human-readable location/address
+
+  -- ── Live camera evidence / geoverification ─────────────────
+  capture_lat     DECIMAL(10, 7),               -- GPS latitude at photo capture
+  capture_lng     DECIMAL(10, 7),               -- GPS longitude at photo capture
+  capture_accuracy DECIMAL(8, 2),                -- GPS accuracy in metres
+  captured_at     TIMESTAMPTZ,                  -- Exact capture timestamp
+  capture_method  VARCHAR(30) DEFAULT 'live_camera',
+  geolocation_captured BOOLEAN DEFAULT FALSE,
+
+  -- ── CVI / Machine Learning assessment ─────────────────────
+  ml_severity     VARCHAR(30),
+  ml_confidence   DECIMAL(6, 4),
+  cvi_verified    BOOLEAN DEFAULT FALSE,
+  severity_score  INTEGER DEFAULT 0,
+  is_pothole      BOOLEAN DEFAULT FALSE,
+
+  -- ── Individual evidence PDF ──────────────────────────────
+  evidence_pdf_url TEXT,
   status          VARCHAR(20) NOT NULL DEFAULT 'received'
                     CHECK (status IN ('received','under_review','complaint_sent','under_repair','resolved')),
   cluster_id      INTEGER,                       -- Set by DBSCAN engine
+  danger_zone_id  INTEGER REFERENCES danger_zones(id) ON DELETE SET NULL,
   sms_sent        BOOLEAN DEFAULT FALSE,
   created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -39,30 +85,22 @@ CREATE INDEX IF NOT EXISTS idx_reports_cluster
   ON reports (cluster_id)
   WHERE cluster_id IS NOT NULL;
 
--- ── Danger zones table (output of DBSCAN) ───────────────────────
-CREATE TABLE IF NOT EXISTS danger_zones (
-  id              SERIAL PRIMARY KEY,
-  cluster_id      INTEGER UNIQUE NOT NULL,
-  center_lat      DECIMAL(10, 7) NOT NULL,
-  center_lng      DECIMAL(10, 7) NOT NULL,
-  hazard_type     VARCHAR(30) NOT NULL,          -- Most common hazard type in cluster
-  report_count    INTEGER NOT NULL DEFAULT 0,
-  severity        VARCHAR(20) NOT NULL DEFAULT 'verified'
-                    CHECK (severity IN ('verified','critical')),
-  status          VARCHAR(20) NOT NULL DEFAULT 'open'
-                    CHECK (status IN ('open','complaint_sent','under_repair','resolved')),
-  complaint_pdf_url TEXT,                        -- Path to generated PDF
-  complaint_sent_at TIMESTAMPTZ,
-  resolved_at     TIMESTAMPTZ,
-  created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
+CREATE INDEX IF NOT EXISTS idx_reports_danger_zone
+  ON reports (danger_zone_id)
+  WHERE danger_zone_id IS NOT NULL;
 
-CREATE INDEX IF NOT EXISTS idx_danger_zones_location
-  ON danger_zones (center_lat, center_lng);
+-- ── Safe idempotent migrations for existing databases ─────────────
+ALTER TABLE danger_zones
+  ADD COLUMN IF NOT EXISTS location_name TEXT;
 
-CREATE INDEX IF NOT EXISTS idx_danger_zones_status
-  ON danger_zones (status);
+ALTER TABLE reports
+  ADD COLUMN IF NOT EXISTS danger_zone_id INTEGER REFERENCES danger_zones(id) ON DELETE SET NULL;
+
+ALTER TABLE reports
+  ADD COLUMN IF NOT EXISTS severity_score INTEGER DEFAULT 0;
+
+ALTER TABLE reports
+  ADD COLUMN IF NOT EXISTS is_pothole BOOLEAN DEFAULT FALSE;
 
 -- ── Complaint letters table ──────────────────────────────────────
 CREATE TABLE IF NOT EXISTS complaints (

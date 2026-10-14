@@ -79,6 +79,124 @@ function resolveImagePath(r) {
   if (fs.existsSync(alt)) return alt;
   return null;
 }
+// ─────────────────────────────────────────────────────────────
+// Evidence / Geoverification helpers
+// ─────────────────────────────────────────────────────────────
+
+function getReportLatitude(r) {
+  return Number(
+    r.capture_lat ??
+    r.capture_latitude ??
+    r.photo_lat ??
+    r.photo_latitude ??
+    r.latitude ??
+    r.lat ??
+    r.location_lat ??
+    r.location?.lat ??
+    r.captureLocation?.lat ??
+    r.gps?.lat ??
+    0
+  );
+}
+
+function getReportLongitude(r) {
+  return Number(
+    r.capture_lng ??
+    r.capture_longitude ??
+    r.photo_lng ??
+    r.photo_longitude ??
+    r.longitude ??
+    r.lng ??
+    r.location_lng ??
+    r.location?.lng ??
+    r.captureLocation?.lng ??
+    r.gps?.lng ??
+    0
+  );
+}
+
+function getGPSAccuracy(r) {
+  return Number(
+    r.capture_accuracy ??
+    r.gps_accuracy ??
+    r.location_accuracy ??
+    r.photo_accuracy ??
+    r.captureLocation?.accuracy ??
+    r.gps?.accuracy ??
+    0
+  );
+}
+
+function getCaptureTime(r) {
+  return (
+    r.captured_at ??
+    r.capture_timestamp ??
+    r.photo_captured_at ??
+    r.capturedAt ??
+    r.created_at ??
+    new Date().toISOString()
+  );
+}
+
+function getCaptureMethod(r) {
+  return (
+    r.capture_method ??
+    r.captureMethod ??
+    'live_camera'
+  );
+}
+
+function getMLSeverity(r) {
+  return (
+    r.ml_severity ??
+    r.ai_severity ??
+    r.aiSeverity ??
+    r.severity ??
+    'Not available'
+  );
+}
+
+function getMLConfidence(r) {
+  const value =
+    r.ml_confidence ??
+    r.ai_confidence ??
+    r.aiConfidence ??
+    r.confidence;
+
+  if (value === undefined || value === null || value === '') {
+    return 'Not available';
+  }
+
+  const number = Number(value);
+
+  if (Number.isNaN(number)) {
+    return String(value);
+  }
+
+  return `${(number <= 1 ? number * 100 : number).toFixed(1)}%`;
+}
+
+function getCVIStatus(r) {
+  if (
+    r.cvi_verified === true ||
+    r.cviVerified === true ||
+    r.ml_verified === true ||
+    r.mlVerified === true
+  ) {
+    return 'VERIFIED';
+  }
+
+  if (
+    r.cvi_verified === false ||
+    r.cviVerified === false ||
+    r.ml_verified === false ||
+    r.mlVerified === false
+  ) {
+    return 'REQUIRES REVIEW';
+  }
+
+  return 'PROCESSED BY ML / CVI PIPELINE';
+}
 // ── Helper Shapes & Vectors ───────────────────────────────────────
 function filledRect(doc, x, y, w, h, r, fill, stroke) {
   doc.roundedRect(x, y, w, h, r);
@@ -269,6 +387,105 @@ async function generateComplaintPDF({
   printRow('Report Count', reportText);
 
   docY += totalDetailsHeight + 15;
+// ─────────────────────────────────────────────────────────────
+// EVIDENCE AUTHENTICITY & GEOVERIFICATION
+// ─────────────────────────────────────────────────────────────
+
+const evidenceReport = reports[0] || {};
+
+const evidenceLat = getReportLatitude(evidenceReport);
+const evidenceLng = getReportLongitude(evidenceReport);
+const evidenceAccuracy = getGPSAccuracy(evidenceReport);
+const evidenceTime = getCaptureTime(evidenceReport);
+const evidenceMethod = getCaptureMethod(evidenceReport);
+
+const cviStatus = getCVIStatus(evidenceReport);
+const mlSeverity = getMLSeverity(evidenceReport);
+const mlConfidence = getMLConfidence(evidenceReport);
+
+const evidenceHeight = 150;
+
+filledRect(
+  doc,
+  40,
+  docY,
+  515,
+  evidenceHeight,
+  8,
+  '#F8FAFC',
+  C.border
+);
+
+doc.fillColor(C.navy)
+  .font('Helvetica-Bold')
+  .fontSize(11)
+  .text(
+    'EVIDENCE AUTHENTICITY & GEOVERIFICATION',
+    55,
+    docY + 14
+  );
+
+doc.fillColor(C.slate)
+  .font('Helvetica')
+  .fontSize(8.5);
+
+const evidenceRows = [
+  ['Capture Method', evidenceMethod === 'live_camera'
+    ? 'LIVE CAMERA CAPTURE'
+    : String(evidenceMethod)],
+
+  ['GPS Coordinates',
+    evidenceLat && evidenceLng
+      ? `${evidenceLat.toFixed(6)}, ${evidenceLng.toFixed(6)}`
+      : 'Unavailable'],
+
+  ['GPS Accuracy',
+    evidenceAccuracy
+      ? `±${Math.round(evidenceAccuracy)} metres`
+      : 'Unavailable'],
+
+  ['Capture Timestamp',
+    new Date(evidenceTime).toLocaleString('en-IN')],
+
+  ['Geotag Status',
+    evidenceLat && evidenceLng
+      ? 'GPS LOCKED AT CAPTURE'
+      : 'NOT AVAILABLE'],
+
+  ['Geoverification',
+    evidenceLat && evidenceLng
+      ? 'LOCATION ASSOCIATED WITH CAPTURE'
+      : 'REQUIRES REVIEW'],
+
+  ['CVI / ML Status', cviStatus],
+
+  ['ML Severity', String(mlSeverity)],
+
+  ['ML Confidence', mlConfidence]
+];
+
+let evidenceRowY = docY + 38;
+
+for (const [label, value] of evidenceRows) {
+
+  doc.fillColor(C.muted)
+    .font('Helvetica-Bold')
+    .fontSize(8)
+    .text(label, 55, evidenceRowY, {
+      width: 115
+    });
+
+  doc.fillColor(C.slate)
+    .font('Helvetica')
+    .fontSize(8.5)
+    .text(String(value), 175, evidenceRowY, {
+      width: 350
+    });
+
+  evidenceRowY += 12;
+}
+
+docY += evidenceHeight + 15;
 
   // ── 7. REPORT RECORDS TABLE ──
   doc.fillColor(C.navy).font('Helvetica-Bold').fontSize(10).text('REPORT RECORDS', 40, docY + 2);
@@ -311,47 +528,250 @@ async function generateComplaintPDF({
 
   docY += 75;
 
-  // ── 9. PHOTO EVIDENCE THUMBNAILS ──
-  const photoReports = reports.filter(r => resolveImagePath(r));
+  // ─────────────────────────────────────────────────────────────
+// PHOTO EVIDENCE
+// ─────────────────────────────────────────────────────────────
 
-  if (photoReports.length > 0) {
-    doc.fillColor(C.navy).font('Helvetica-Bold').fontSize(10).text('PHOTO EVIDENCE', 40, docY + 4);
-    doc.moveTo(140, docY + 9).lineTo(555, docY + 9).lineWidth(1).strokeColor(C.navy).stroke();
+const photoReports = reports.filter(r => resolveImagePath(r));
 
-    const maxPhotos = Math.min(photoReports.length, 5);
-    const thumbW = 95, thumbH = 65, gap = 10;
-    
-    for (let i = 0; i < maxPhotos; i++) {
-      const r = photoReports[i];
-      const imgSource = resolveImagePath(r);
-      const px = 40 + i * (thumbW + gap);
-      const thumbY = docY + 18;
+if (photoReports.length > 0) {
 
-      filledRect(doc, px, thumbY, thumbW, thumbH, 2, C.rowA, C.border);
-      
-      try {
-        if (imgSource.startsWith('http')) {
-          // 1. Download image from Cloudinary into memory
-          const imgRes = await axios.get(imgSource, { responseType: 'arraybuffer' });
-          const imgBuffer = Buffer.from(imgRes.data, 'utf-8');
-          // 2. Pass the memory buffer to PDFKit
-          doc.image(imgBuffer, px, thumbY, { fit: [thumbW, thumbH - 12], align: 'center', valign: 'center' });
-        } else {
-          // Local file fallback
-          doc.image(imgSource, px, thumbY, { fit: [thumbW, thumbH - 12], align: 'center', valign: 'center' });
+  doc.fillColor(C.navy)
+    .font('Helvetica-Bold')
+    .fontSize(11)
+    .text(
+      'PHOTO EVIDENCE',
+      40,
+      docY + 4
+    );
+
+  doc.moveTo(140, docY + 9)
+    .lineTo(555, docY + 9)
+    .lineWidth(1)
+    .strokeColor(C.navy)
+    .stroke();
+
+  docY += 20;
+
+  // One full evidence image for the report
+  const r = photoReports[0];
+  const imgSource = resolveImagePath(r);
+
+  const imageX = 55;
+  const imageY = docY;
+  const imageW = 485;
+  const imageH = 300;
+
+  filledRect(
+    doc,
+    imageX - 5,
+    imageY - 5,
+    imageW + 10,
+    imageH + 10,
+    5,
+    C.rowA,
+    C.border
+  );
+
+  try {
+
+    if (imgSource.startsWith('http')) {
+
+      const imgRes = await axios.get(
+        imgSource,
+        {
+          responseType: 'arraybuffer'
         }
-      } catch (e) {
-        console.error("PDF Image Error:", e.message);
-        doc.fillColor(C.muted).font('Helvetica').fontSize(7)
-           .text('Image Error', px, thumbY + 20, { width: thumbW, align: 'center' });
-      }
+      );
 
-      filledRect(doc, px, thumbY + thumbH - 12, thumbW, 12, 0, C.navy);
-      doc.fillColor(C.white).font('Helvetica-Bold').fontSize(6)
-         .text(`Report ID: ${r.report_id || r.id || '-'}`, px + 3, thumbY + thumbH - 9);
+      const imgBuffer = Buffer.from(imgRes.data);
+
+      doc.image(
+        imgBuffer,
+        imageX,
+        imageY,
+        {
+          fit: [imageW, imageH],
+          align: 'center',
+          valign: 'center'
+        }
+      );
+
+    } else {
+
+      doc.image(
+        imgSource,
+        imageX,
+        imageY,
+        {
+          fit: [imageW, imageH],
+          align: 'center',
+          valign: 'center'
+        }
+      );
+
     }
+
+  } catch (e) {
+
+    console.error(
+      'PDF Image Error:',
+      e.message
+    );
+
+    doc.fillColor(C.muted)
+      .font('Helvetica')
+      .fontSize(9)
+      .text(
+        'Evidence image could not be loaded.',
+        imageX,
+        imageY + 130,
+        {
+          width: imageW,
+          align: 'center'
+        }
+      );
   }
 
+  docY += imageH + 20;
+
+  // Evidence metadata under image
+  filledRect(
+    doc,
+    40,
+    docY,
+    515,
+    90,
+    6,
+    '#F8FAFC',
+    C.border
+  );
+
+  doc.fillColor(C.navy)
+    .font('Helvetica-Bold')
+    .fontSize(9)
+    .text(
+      'GEOTAGGED EVIDENCE METADATA',
+      55,
+      docY + 12
+    );
+
+  doc.fillColor(C.slate)
+    .font('Helvetica')
+    .fontSize(8);
+
+  doc.text(
+    `Latitude: ${evidenceLat ? evidenceLat.toFixed(6) : 'Unavailable'}`,
+    55,
+    docY + 30
+  );
+
+  doc.text(
+    `Longitude: ${evidenceLng ? evidenceLng.toFixed(6) : 'Unavailable'}`,
+    55,
+    docY + 44
+  );
+
+  doc.text(
+    `GPS Accuracy: ${
+      evidenceAccuracy
+        ? `±${Math.round(evidenceAccuracy)} m`
+        : 'Unavailable'
+    }`,
+    55,
+    docY + 58
+  );
+
+  doc.text(
+    `Captured: ${new Date(evidenceTime).toLocaleString('en-IN')}`,
+    300,
+    docY + 30
+  );
+
+  doc.text(
+    `Method: ${
+      evidenceMethod === 'live_camera'
+        ? 'Live Camera'
+        : evidenceMethod
+    }`,
+    300,
+    docY + 44
+  );
+
+  doc.text(
+    `Geoverification: ${
+      evidenceLat && evidenceLng
+        ? 'GPS coordinates recorded at capture'
+        : 'Unavailable'
+    }`,
+    300,
+    docY + 58
+  );
+
+  docY += 105;
+}
+// ─────────────────────────────────────────────────────────────
+// CVI / ML POLICY
+// ─────────────────────────────────────────────────────────────
+
+const policyY = docY;
+
+filledRect(
+  doc,
+  40,
+  policyY,
+  515,
+  92,
+  6,
+  '#FDF8ED',
+  C.goldLight
+);
+
+doc.fillColor(C.navy)
+  .font('Helvetica-Bold')
+  .fontSize(10)
+  .text(
+    'COMPUTER VISION INSPECTION (CVI) / ML ASSESSMENT POLICY',
+    55,
+    policyY + 12
+  );
+
+doc.fillColor(C.slate)
+  .font('Helvetica')
+  .fontSize(8.5)
+  .text(
+    'The SafeStreet evidence image is processed through the platform ML / computer-vision pipeline for automated hazard classification and severity assessment.',
+    55,
+    policyY + 31,
+    {
+      width: 485,
+      lineGap: 2
+    }
+  );
+
+doc.text(
+  'ML results are decision-support information and do not replace municipal inspection or official engineering assessment.',
+  55,
+  policyY + 53,
+  {
+    width: 485,
+    lineGap: 2
+  }
+);
+
+doc.fillColor(C.green)
+  .font('Helvetica-Bold')
+  .fontSize(8)
+  .text(
+    `CVI STATUS: ${cviStatus}   |   ML SEVERITY: ${mlSeverity}   |   CONFIDENCE: ${mlConfidence}`,
+    55,
+    policyY + 75,
+    {
+      width: 485
+    }
+  );
+
+docY += 107;
   // ── 10. SCREENSHOT-ACCURATE FOOTER WITH SHIELD ICON ──
   const fY = 785; 
   filledRect(doc, 40, fY, 515, 45, 6, C.rowA, C.border);
