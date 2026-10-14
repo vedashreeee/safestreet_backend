@@ -3,6 +3,7 @@ const multer   = require('multer')
 const router   = express.Router()
 const pool     = require('../db')
 const { runClustering } = require('../clustering')
+const { generateReportEvidencePDF } = require('../pdfGenerator')
 const cloudinary = require('../cloudinary')
 
 /* =========================================
@@ -185,12 +186,58 @@ router.post('/', upload.single('photo'), async (req, res) => {
       ]
     )
 
-    console.log(`✅ Report created: ${reportId} at ${placeName}`)
+    const reportRecord = result.rows[0];
+    console.log(`✅ Report created: ${reportId} at ${placeName}`);
+
+    // 4. --- GENERATE INDIVIDUAL EVIDENCE PDF ---
+    let evidencePdfUrl = null;
+    try {
+      console.log(`📄 Generating Evidence PDF for report ${reportId}...`);
+      const pdfResult = await generateReportEvidencePDF({
+        ...reportRecord,
+        photo_url: photoUrl,
+        location_name: placeName,
+        ml_severity: severityLevel,
+        ml_confidence: mlConfidence,
+        cvi_verified: cviVerified,
+        severity_score: severityScore,
+        is_pothole: isPothole
+      });
+
+      evidencePdfUrl = (pdfResult?.pdfUrl && typeof pdfResult.pdfUrl === 'string' && pdfResult.pdfUrl.startsWith('http'))
+        ? pdfResult.pdfUrl
+        : null;
+
+      if (evidencePdfUrl) {
+        console.log(`✅ Evidence PDF uploaded to cloud storage for ${reportId}: ${evidencePdfUrl}`);
+        const updateResult = await pool.query(
+          `
+          UPDATE reports
+          SET evidence_pdf_url = $1, updated_at = NOW()
+          WHERE report_id = $2
+          RETURNING *
+          `,
+          [evidencePdfUrl, reportId]
+        );
+
+        if (updateResult.rows.length > 0) {
+          result.rows[0] = updateResult.rows[0];
+          console.log(`💾 Persisted evidence_pdf_url for ${reportId} to database`);
+        } else {
+          result.rows[0].evidence_pdf_url = evidencePdfUrl;
+        }
+      } else {
+        console.warn(`⚠️ Evidence PDF cloud upload unavailable for report ${reportId} (${pdfResult?.error || 'No public URL returned'}). PDF URL will not be persisted to ephemeral storage.`);
+      }
+    } catch (pdfErr) {
+      console.error(`⚠️ Evidence PDF generation failed for report ${reportId}:`, pdfErr.message);
+      // Non-fatal: Report was already safely created
+    }
 
     try {
-      await runClustering()
+      await runClustering();
     } catch (clusterErr) {
-      console.error('CLUSTERING ERROR:', clusterErr)
+      console.error('CLUSTERING ERROR:', clusterErr);
     }
 
     res.json({
@@ -198,14 +245,16 @@ router.post('/', upload.single('photo'), async (req, res) => {
       reportId,
       report: result.rows[0],
       photoUrl,
+      evidence_pdf_url: evidencePdfUrl,
+      evidencePdfUrl: evidencePdfUrl,
       ml_data: { severityScore, severityLevel }
-    })
+    });
 
   } catch (err) {
-    console.error('REPORT ERROR:', err)
-    res.status(500).json({ success: false, error: err.message || 'Server Error' })
+    console.error('REPORT ERROR:', err);
+    res.status(500).json({ success: false, error: err.message || 'Server Error' });
   }
-})
+});
 
 /* =========================================
    GET ALL REPORTS
@@ -222,12 +271,73 @@ router.get('/', async (req, res) => {
         ON r.danger_zone_id = dz.id
       ORDER BY r.created_at DESC
       `
-    )
-    res.json(result.rows)
+    );
+    res.json(result.rows);
   } catch (err) {
-    console.error(err)
-    res.status(500).json({ success: false, error: err.message })
+    console.error(err);
+    res.status(500).json({ success: false, error: err.message });
   }
-})
+});
 
-module.exports = router
+/* =========================================
+   GET / GENERATE INDIVIDUAL EVIDENCE PDF ON DEMAND
+========================================= */
+router.get('/:id/evidence-pdf', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const result = await pool.query(
+      `
+      SELECT
+        r.*,
+        COALESCE(dz.location_name, r.location_name) AS location_name
+      FROM reports r
+      LEFT JOIN danger_zones dz
+        ON r.danger_zone_id = dz.id
+      WHERE r.report_id = $1 OR r.id::text = $1
+      `,
+      [id]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ success: false, error: 'Report not found' });
+    }
+
+    const report = result.rows[0];
+
+    // If PDF URL already exists and is a valid public HTTP(S) URL, redirect to it
+    if (report.evidence_pdf_url && typeof report.evidence_pdf_url === 'string' && report.evidence_pdf_url.startsWith('http')) {
+      return res.redirect(report.evidence_pdf_url);
+    }
+
+    // Generate on demand for older reports or reports without a public URL
+    console.log(`📄 Generating Evidence PDF on demand for report ${report.report_id}...`);
+    const pdfResult = await generateReportEvidencePDF(report);
+    const evidencePdfUrl = (pdfResult?.pdfUrl && typeof pdfResult.pdfUrl === 'string' && pdfResult.pdfUrl.startsWith('http'))
+      ? pdfResult.pdfUrl
+      : null;
+
+    if (evidencePdfUrl) {
+      await pool.query(
+        `
+        UPDATE reports
+        SET evidence_pdf_url = $1, updated_at = NOW()
+        WHERE report_id = $2
+        `,
+        [evidencePdfUrl, report.report_id]
+      );
+      console.log(`💾 Persisted on-demand evidence_pdf_url for ${report.report_id} to database`);
+      return res.redirect(evidencePdfUrl);
+    }
+
+    // If Cloudinary upload failed or is unconfigured, return a clear error instead of a broken local link
+    return res.status(503).json({
+      success: false,
+      error: `Evidence PDF unavailable: ${pdfResult?.error || 'Cloud storage upload failed or is not configured'}`
+    });
+  } catch (err) {
+    console.error('EVIDENCE PDF ON DEMAND ERROR:', err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+module.exports = router;

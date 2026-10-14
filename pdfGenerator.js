@@ -8,8 +8,12 @@ const isVercel = process.env.VERCEL || process.env.VERCEL_ENV;
 const OUTPUT_DIR = isVercel 
   ? '/tmp/complaints' 
   : path.join(__dirname, 'uploads', 'complaints');
+const EVIDENCE_OUTPUT_DIR = isVercel
+  ? '/tmp/evidence'
+  : path.join(__dirname, 'uploads', 'evidence');
 
 if (!fs.existsSync(OUTPUT_DIR)) fs.mkdirSync(OUTPUT_DIR, { recursive: true });
+if (!fs.existsSync(EVIDENCE_OUTPUT_DIR)) fs.mkdirSync(EVIDENCE_OUTPUT_DIR, { recursive: true });
 // ── Colour palette ────────────────────────────────────────────────
 const C = {
   navy:       '#0F172A',
@@ -387,105 +391,6 @@ async function generateComplaintPDF({
   printRow('Report Count', reportText);
 
   docY += totalDetailsHeight + 15;
-// ─────────────────────────────────────────────────────────────
-// EVIDENCE AUTHENTICITY & GEOVERIFICATION
-// ─────────────────────────────────────────────────────────────
-
-const evidenceReport = reports[0] || {};
-
-const evidenceLat = getReportLatitude(evidenceReport);
-const evidenceLng = getReportLongitude(evidenceReport);
-const evidenceAccuracy = getGPSAccuracy(evidenceReport);
-const evidenceTime = getCaptureTime(evidenceReport);
-const evidenceMethod = getCaptureMethod(evidenceReport);
-
-const cviStatus = getCVIStatus(evidenceReport);
-const mlSeverity = getMLSeverity(evidenceReport);
-const mlConfidence = getMLConfidence(evidenceReport);
-
-const evidenceHeight = 150;
-
-filledRect(
-  doc,
-  40,
-  docY,
-  515,
-  evidenceHeight,
-  8,
-  '#F8FAFC',
-  C.border
-);
-
-doc.fillColor(C.navy)
-  .font('Helvetica-Bold')
-  .fontSize(11)
-  .text(
-    'EVIDENCE AUTHENTICITY & GEOVERIFICATION',
-    55,
-    docY + 14
-  );
-
-doc.fillColor(C.slate)
-  .font('Helvetica')
-  .fontSize(8.5);
-
-const evidenceRows = [
-  ['Capture Method', evidenceMethod === 'live_camera'
-    ? 'LIVE CAMERA CAPTURE'
-    : String(evidenceMethod)],
-
-  ['GPS Coordinates',
-    evidenceLat && evidenceLng
-      ? `${evidenceLat.toFixed(6)}, ${evidenceLng.toFixed(6)}`
-      : 'Unavailable'],
-
-  ['GPS Accuracy',
-    evidenceAccuracy
-      ? `±${Math.round(evidenceAccuracy)} metres`
-      : 'Unavailable'],
-
-  ['Capture Timestamp',
-    new Date(evidenceTime).toLocaleString('en-IN')],
-
-  ['Geotag Status',
-    evidenceLat && evidenceLng
-      ? 'GPS LOCKED AT CAPTURE'
-      : 'NOT AVAILABLE'],
-
-  ['Geoverification',
-    evidenceLat && evidenceLng
-      ? 'LOCATION ASSOCIATED WITH CAPTURE'
-      : 'REQUIRES REVIEW'],
-
-  ['CVI / ML Status', cviStatus],
-
-  ['ML Severity', String(mlSeverity)],
-
-  ['ML Confidence', mlConfidence]
-];
-
-let evidenceRowY = docY + 38;
-
-for (const [label, value] of evidenceRows) {
-
-  doc.fillColor(C.muted)
-    .font('Helvetica-Bold')
-    .fontSize(8)
-    .text(label, 55, evidenceRowY, {
-      width: 115
-    });
-
-  doc.fillColor(C.slate)
-    .font('Helvetica')
-    .fontSize(8.5)
-    .text(String(value), 175, evidenceRowY, {
-      width: 350
-    });
-
-  evidenceRowY += 12;
-}
-
-docY += evidenceHeight + 15;
 
   // ── 7. REPORT RECORDS TABLE ──
   doc.fillColor(C.navy).font('Helvetica-Bold').fontSize(10).text('REPORT RECORDS', 40, docY + 2);
@@ -528,250 +433,47 @@ docY += evidenceHeight + 15;
 
   docY += 75;
 
-  // ─────────────────────────────────────────────────────────────
-// PHOTO EVIDENCE
-// ─────────────────────────────────────────────────────────────
+  // ── 9. PHOTO EVIDENCE THUMBNAILS ──
+  const photoReports = reports.filter(r => resolveImagePath(r));
 
-const photoReports = reports.filter(r => resolveImagePath(r));
+  if (photoReports.length > 0) {
+    doc.fillColor(C.navy).font('Helvetica-Bold').fontSize(10).text('PHOTO EVIDENCE', 40, docY + 4);
+    doc.moveTo(140, docY + 9).lineTo(555, docY + 9).lineWidth(1).strokeColor(C.navy).stroke();
 
-if (photoReports.length > 0) {
+    const maxPhotos = Math.min(photoReports.length, 5);
+    const thumbW = 95, thumbH = 65, gap = 10;
+    
+    for (let i = 0; i < maxPhotos; i++) {
+      const r = photoReports[i];
+      const imgSource = resolveImagePath(r);
+      const px = 40 + i * (thumbW + gap);
+      const thumbY = docY + 18;
 
-  doc.fillColor(C.navy)
-    .font('Helvetica-Bold')
-    .fontSize(11)
-    .text(
-      'PHOTO EVIDENCE',
-      40,
-      docY + 4
-    );
-
-  doc.moveTo(140, docY + 9)
-    .lineTo(555, docY + 9)
-    .lineWidth(1)
-    .strokeColor(C.navy)
-    .stroke();
-
-  docY += 20;
-
-  // One full evidence image for the report
-  const r = photoReports[0];
-  const imgSource = resolveImagePath(r);
-
-  const imageX = 55;
-  const imageY = docY;
-  const imageW = 485;
-  const imageH = 300;
-
-  filledRect(
-    doc,
-    imageX - 5,
-    imageY - 5,
-    imageW + 10,
-    imageH + 10,
-    5,
-    C.rowA,
-    C.border
-  );
-
-  try {
-
-    if (imgSource.startsWith('http')) {
-
-      const imgRes = await axios.get(
-        imgSource,
-        {
-          responseType: 'arraybuffer'
+      filledRect(doc, px, thumbY, thumbW, thumbH, 2, C.rowA, C.border);
+      
+      try {
+        if (imgSource.startsWith('http')) {
+          // 1. Download image from Cloudinary into memory
+          const imgRes = await axios.get(imgSource, { responseType: 'arraybuffer', timeout: 5000 });
+          const imgBuffer = Buffer.from(imgRes.data);
+          // 2. Pass the memory buffer to PDFKit
+          doc.image(imgBuffer, px, thumbY, { fit: [thumbW, thumbH - 12], align: 'center', valign: 'center' });
+        } else {
+          // Local file fallback
+          doc.image(imgSource, px, thumbY, { fit: [thumbW, thumbH - 12], align: 'center', valign: 'center' });
         }
-      );
+      } catch (e) {
+        console.error("PDF Image Error:", e.message);
+        doc.fillColor(C.muted).font('Helvetica').fontSize(7)
+           .text('Image Error', px, thumbY + 20, { width: thumbW, align: 'center' });
+      }
 
-      const imgBuffer = Buffer.from(imgRes.data);
-
-      doc.image(
-        imgBuffer,
-        imageX,
-        imageY,
-        {
-          fit: [imageW, imageH],
-          align: 'center',
-          valign: 'center'
-        }
-      );
-
-    } else {
-
-      doc.image(
-        imgSource,
-        imageX,
-        imageY,
-        {
-          fit: [imageW, imageH],
-          align: 'center',
-          valign: 'center'
-        }
-      );
-
+      filledRect(doc, px, thumbY + thumbH - 12, thumbW, 12, 0, C.navy);
+      doc.fillColor(C.white).font('Helvetica-Bold').fontSize(6)
+         .text(`Report ID: ${r.report_id || r.id || '-'}`, px + 3, thumbY + thumbH - 9);
     }
-
-  } catch (e) {
-
-    console.error(
-      'PDF Image Error:',
-      e.message
-    );
-
-    doc.fillColor(C.muted)
-      .font('Helvetica')
-      .fontSize(9)
-      .text(
-        'Evidence image could not be loaded.',
-        imageX,
-        imageY + 130,
-        {
-          width: imageW,
-          align: 'center'
-        }
-      );
   }
 
-  docY += imageH + 20;
-
-  // Evidence metadata under image
-  filledRect(
-    doc,
-    40,
-    docY,
-    515,
-    90,
-    6,
-    '#F8FAFC',
-    C.border
-  );
-
-  doc.fillColor(C.navy)
-    .font('Helvetica-Bold')
-    .fontSize(9)
-    .text(
-      'GEOTAGGED EVIDENCE METADATA',
-      55,
-      docY + 12
-    );
-
-  doc.fillColor(C.slate)
-    .font('Helvetica')
-    .fontSize(8);
-
-  doc.text(
-    `Latitude: ${evidenceLat ? evidenceLat.toFixed(6) : 'Unavailable'}`,
-    55,
-    docY + 30
-  );
-
-  doc.text(
-    `Longitude: ${evidenceLng ? evidenceLng.toFixed(6) : 'Unavailable'}`,
-    55,
-    docY + 44
-  );
-
-  doc.text(
-    `GPS Accuracy: ${
-      evidenceAccuracy
-        ? `±${Math.round(evidenceAccuracy)} m`
-        : 'Unavailable'
-    }`,
-    55,
-    docY + 58
-  );
-
-  doc.text(
-    `Captured: ${new Date(evidenceTime).toLocaleString('en-IN')}`,
-    300,
-    docY + 30
-  );
-
-  doc.text(
-    `Method: ${
-      evidenceMethod === 'live_camera'
-        ? 'Live Camera'
-        : evidenceMethod
-    }`,
-    300,
-    docY + 44
-  );
-
-  doc.text(
-    `Geoverification: ${
-      evidenceLat && evidenceLng
-        ? 'GPS coordinates recorded at capture'
-        : 'Unavailable'
-    }`,
-    300,
-    docY + 58
-  );
-
-  docY += 105;
-}
-// ─────────────────────────────────────────────────────────────
-// CVI / ML POLICY
-// ─────────────────────────────────────────────────────────────
-
-const policyY = docY;
-
-filledRect(
-  doc,
-  40,
-  policyY,
-  515,
-  92,
-  6,
-  '#FDF8ED',
-  C.goldLight
-);
-
-doc.fillColor(C.navy)
-  .font('Helvetica-Bold')
-  .fontSize(10)
-  .text(
-    'COMPUTER VISION INSPECTION (CVI) / ML ASSESSMENT POLICY',
-    55,
-    policyY + 12
-  );
-
-doc.fillColor(C.slate)
-  .font('Helvetica')
-  .fontSize(8.5)
-  .text(
-    'The SafeStreet evidence image is processed through the platform ML / computer-vision pipeline for automated hazard classification and severity assessment.',
-    55,
-    policyY + 31,
-    {
-      width: 485,
-      lineGap: 2
-    }
-  );
-
-doc.text(
-  'ML results are decision-support information and do not replace municipal inspection or official engineering assessment.',
-  55,
-  policyY + 53,
-  {
-    width: 485,
-    lineGap: 2
-  }
-);
-
-doc.fillColor(C.green)
-  .font('Helvetica-Bold')
-  .fontSize(8)
-  .text(
-    `CVI STATUS: ${cviStatus}   |   ML SEVERITY: ${mlSeverity}   |   CONFIDENCE: ${mlConfidence}`,
-    55,
-    policyY + 75,
-    {
-      width: 485
-    }
-  );
-
-docY += 107;
   // ── 10. SCREENSHOT-ACCURATE FOOTER WITH SHIELD ICON ──
   const fY = 785; 
   filledRect(doc, 40, fY, 515, 45, 6, C.rowA, C.border);
@@ -787,53 +489,379 @@ docY += 107;
 
   return new Promise((resolve, reject) => {
     stream.on('finish', async () => {
-  // Try to upload to Cloudinary if configured
-  if (
-    process.env.CLOUDINARY_CLOUD_NAME &&
-    process.env.CLOUDINARY_API_KEY &&
-    process.env.CLOUDINARY_API_SECRET
-  ) {
-    try {
-      const cloudinary = require('./cloudinary')
-      const result = await cloudinary.uploader.upload(filePath, {
-        folder:        'safestreet/complaints',
-        resource_type: 'raw',
-        public_id:     complaintId,
-        format:        'pdf',
-      })
-      // Delete local file after successful upload
-      fs.unlink(filePath, () => {})
-      console.log(`☁️  PDF uploaded to Cloudinary: ${result.secure_url}`)
-      resolve({
-        complaintId,
-        relPath:      result.secure_url,  // Full https:// URL
-        filename,
-        locationName: readableLocation,
-        address:      readableLocation,
-      })
-    } catch (uploadErr) {
-      console.warn('Cloudinary PDF upload failed, using local path:', uploadErr.message)
-      resolve({
-        complaintId,
-        relPath: `/uploads/complaints/${filename}`,
-        filename,
-        locationName: readableLocation,
-        address:      readableLocation,
-      })
-    }
-  } else {
-    // No Cloudinary — use local path
-    resolve({
-      complaintId,
-      relPath: `/uploads/complaints/${filename}`,
-      filename,
-      locationName: readableLocation,
-      address:      readableLocation,
-    })
-  }
-})
-stream.on('error', reject)
+      // Try to upload to Cloudinary if configured
+      if (
+        process.env.CLOUDINARY_CLOUD_NAME &&
+        process.env.CLOUDINARY_API_KEY &&
+        process.env.CLOUDINARY_API_SECRET
+      ) {
+        try {
+          const cloudinary = require('./cloudinary');
+          const result = await cloudinary.uploader.upload(filePath, {
+            folder:        'safestreet/complaints',
+            resource_type: 'auto',
+            public_id:     complaintId,
+          });
+          // Delete local file after successful upload
+          fs.unlink(filePath, () => {});
+          console.log(`☁️  Complaint PDF uploaded to Cloudinary: ${result.secure_url}`);
+          resolve({
+            complaintId,
+            relPath:      result.secure_url,  // Full https:// URL
+            filename,
+            locationName: finalLocation,
+            address:      finalLocation,
+          });
+        } catch (uploadErr) {
+          console.warn('Cloudinary PDF upload failed, using local path:', uploadErr.message);
+          resolve({
+            complaintId,
+            relPath: `/uploads/complaints/${filename}`,
+            filename,
+            locationName: finalLocation,
+            address:      finalLocation,
+          });
+        }
+      } else {
+        // No Cloudinary — use local path
+        resolve({
+          complaintId,
+          relPath: `/uploads/complaints/${filename}`,
+          filename,
+          locationName: finalLocation,
+          address:      finalLocation,
+        });
+      }
+    });
+    stream.on('error', reject);
   });
 }
 
-module.exports = { generateComplaintPDF };
+// ── Individual Report Evidence PDF Generator ────────────────────────
+async function generateReportEvidencePDF(report) {
+  if (!report) {
+    throw new Error('Report data is required for evidence PDF generation');
+  }
+
+  const reportId = report.report_id || report.reportId || report.id || `SS-${Math.floor(100000 + Math.random() * 900000)}`;
+  const lat = Number(report.lat ?? report.latitude ?? 0);
+  const lng = Number(report.lng ?? report.longitude ?? 0);
+  const hazardType = report.hazard_type || report.hazard || 'pothole';
+  const hazardName = HAZARD_NAMES[hazardType] || hazardType;
+
+  let locationName = report.location_name || report.location || report.address;
+  if (!locationName && lat && lng) {
+    locationName = await getReadableLocation(lat, lng);
+  }
+  locationName = locationName || `GPS: ${lat.toFixed(5)}, ${lng.toFixed(5)}`;
+
+  const phone = report.phone || 'Not provided';
+  const status = (report.status || 'received').toUpperCase();
+
+  const evidenceLat = getReportLatitude(report);
+  const evidenceLng = getReportLongitude(report);
+  const evidenceAccuracy = getGPSAccuracy(report);
+  const evidenceTime = getCaptureTime(report);
+  const evidenceMethod = getCaptureMethod(report);
+
+  const cviStatus = getCVIStatus(report);
+  const mlSeverity = getMLSeverity(report);
+  const mlConfidence = getMLConfidence(report);
+  const severityScore = Number(report.severity_score ?? report.severityScore ?? 0);
+
+  const createdAt = report.created_at ? new Date(report.created_at) : new Date();
+  const dateStr = createdAt.toLocaleDateString('en-IN', {
+    day: '2-digit', month: '2-digit', year: 'numeric'
+  });
+  const timeStr = createdAt.toLocaleTimeString('en-IN', {
+    hour: '2-digit', minute: '2-digit'
+  });
+
+  const filename = `evidence_${reportId}_${Date.now()}.pdf`;
+  const filePath = path.join(EVIDENCE_OUTPUT_DIR, filename);
+
+  const doc = new PDFDocument({ 
+    size: 'A4', 
+    margins: { top: 25, bottom: 20, left: 40, right: 40 }, 
+    bufferPages: true 
+  });
+  
+  const stream = fs.createWriteStream(filePath);
+  doc.pipe(stream);
+
+  // Background
+  doc.rect(0, 0, 595, 842).fill(C.pageBg);
+
+  // 1. Header
+  const safeStreetLogoPath = path.join(__dirname, 'safestreet_logo.jpg');
+  const apGovLogoPath = path.join(__dirname, 'ap_gov_logo.jpg');
+
+  if (fs.existsSync(safeStreetLogoPath)) {
+    doc.image(safeStreetLogoPath, 40, 16, { width: 46 });
+  } else {
+    drawVectorSafeStreet(doc, 40, 16);
+  }
+
+  doc.fillColor(C.navy).font('Helvetica-Bold').fontSize(17).text('SAFESTREET', 95, 23);
+  doc.fillColor(C.muted).font('Helvetica').fontSize(8.5).text('Civic Road Infrastructure & Safety Platform', 95, 43);
+
+  if (fs.existsSync(apGovLogoPath)) {
+    doc.image(apGovLogoPath, 375, 16, { width: 38 });
+  } else {
+    drawVectorMunicipality(doc, 375, 16);
+  }
+
+  doc.fillColor(C.navy).font('Helvetica-Bold').fontSize(9.5).text('TADIGADAPA MUNICIPALITY', 420, 18, { width: 135 });
+  doc.fillColor(C.slate).font('Helvetica').fontSize(8).text('Municipal Administration', 420, 31);
+  doc.text('Andhra Pradesh', 420, 42);
+
+  doc.moveTo(40, 68).lineTo(555, 68).lineWidth(1.5).strokeColor(C.goldLight).stroke();
+
+  // 2. Document Title
+  doc.fillColor(C.navy).font('Helvetica-Bold').fontSize(13)
+     .text('FIELD EVIDENCE & CVI ASSESSMENT DOSSIER', 40, 80, { align: 'center', width: 515 });
+  doc.fillColor(C.slate).font('Helvetica').fontSize(8.5)
+     .text('Official Citizen Report & Computer Vision Geoverification Record', 40, 96, { align: 'center', width: 515 });
+
+  // 3. Meta Bar
+  const metaY = 114;
+  filledRect(doc, 40, metaY, 155, 34, 6, C.rowA, C.border);
+  doc.fillColor(C.navy).font('Helvetica-Bold').fontSize(7.5).text('REPORT DATE', 55, metaY + 6);
+  doc.fillColor(C.slate).font('Helvetica').fontSize(9.5).text(dateStr, 55, metaY + 18);
+
+  filledRect(doc, 205, metaY, 175, 34, 6, C.rowA, C.border);
+  doc.fillColor(C.green).font('Helvetica-Bold').fontSize(7.5).text('VERIFICATION STATUS', 220, metaY + 6);
+  doc.fillColor(C.green).font('Helvetica-Bold').fontSize(9).text(`${status} • ${cviStatus}`, 220, metaY + 18);
+
+  filledRect(doc, 390, metaY, 165, 34, 6, C.rowA, C.border);
+  doc.fillColor(C.navy).font('Helvetica-Bold').fontSize(7.5).text('REPORT ID', 405, metaY + 6);
+  doc.fillColor(C.navy).font('Helvetica-Bold').fontSize(9.5).text(reportId, 405, metaY + 18);
+
+  // 4. Hazard & Location Card
+  const hazCardY = 156;
+  const hazCardH = 78;
+  filledRect(doc, 40, hazCardY, 515, hazCardH, 6, C.hazardBg, C.goldLight);
+
+  doc.polygon([56, hazCardY + 22], [64, hazCardY + 8], [72, hazCardY + 22]).fill(C.amber);
+  doc.fillColor(C.white).font('Helvetica-Bold').fontSize(8.5).text('!', 62.5, hazCardY + 10.5);
+  doc.fillColor(C.navy).font('Helvetica-Bold').fontSize(9.5).text('HAZARD & LOCATION SPECIFICATIONS', 80, hazCardY + 11);
+
+  const mapsLink = `https://www.google.com/maps?q=${lat},${lng}`;
+  const coordText = `${lat.toFixed(6)}, ${lng.toFixed(6)}`;
+
+  // Left col
+  doc.fillColor(C.muted).font('Helvetica-Bold').fontSize(7.5).text('Hazard Type:', 55, hazCardY + 30);
+  doc.fillColor(C.navy).font('Helvetica-Bold').fontSize(8.5).text(hazardName, 120, hazCardY + 30, { width: 175 });
+
+  doc.fillColor(C.muted).font('Helvetica-Bold').fontSize(7.5).text('Location:', 55, hazCardY + 46);
+  doc.fillColor(C.slate).font('Helvetica').fontSize(8).text(locationName, 120, hazCardY + 46, { width: 175 });
+
+  // Right col
+  doc.fillColor(C.muted).font('Helvetica-Bold').fontSize(7.5).text('Reported GPS:', 310, hazCardY + 30);
+  doc.fillColor('#1D4ED8').font('Helvetica-Bold').fontSize(8.5).text(coordText, 385, hazCardY + 30, { link: mapsLink, underline: true });
+
+  doc.fillColor(C.muted).font('Helvetica-Bold').fontSize(7.5).text('Citizen Phone:', 310, hazCardY + 46);
+  doc.fillColor(C.slate).font('Helvetica').fontSize(8.5).text(phone, 385, hazCardY + 46);
+
+  doc.fillColor(C.muted).font('Helvetica-Bold').fontSize(7.5).text('Recorded At:', 310, hazCardY + 60);
+  doc.fillColor(C.slate).font('Helvetica').fontSize(8).text(`${dateStr} at ${timeStr}`, 385, hazCardY + 60);
+
+  // 5. Evidence Authenticity & Geoverification Card
+  const geoY = 242;
+  const geoH = 80;
+  filledRect(doc, 40, geoY, 515, geoH, 6, '#F8FAFC', C.border);
+
+  doc.fillColor(C.navy).font('Helvetica-Bold').fontSize(9.5).text('EVIDENCE AUTHENTICITY & GEOVERIFICATION', 55, geoY + 10);
+
+  // Row 1
+  doc.fillColor(C.muted).font('Helvetica-Bold').fontSize(7.5).text('Capture Method:', 55, geoY + 28);
+  doc.fillColor(C.slate).font('Helvetica-Bold').fontSize(8).text(
+    evidenceMethod === 'live_camera' ? 'LIVE CAMERA CAPTURE' : String(evidenceMethod),
+    135, geoY + 28, { width: 160 }
+  );
+
+  doc.fillColor(C.muted).font('Helvetica-Bold').fontSize(7.5).text('Geotag Status:', 310, geoY + 28);
+  doc.fillColor(evidenceLat && evidenceLng ? C.green : C.amber).font('Helvetica-Bold').fontSize(8).text(
+    evidenceLat && evidenceLng ? 'GPS LOCKED AT CAPTURE' : 'NOT AVAILABLE',
+    385, geoY + 28
+  );
+
+  // Row 2
+  doc.fillColor(C.muted).font('Helvetica-Bold').fontSize(7.5).text('Capture GPS:', 55, geoY + 44);
+  doc.fillColor(C.slate).font('Helvetica-Bold').fontSize(8).text(
+    evidenceLat && evidenceLng ? `${evidenceLat.toFixed(6)}, ${evidenceLng.toFixed(6)}` : 'Unavailable',
+    135, geoY + 44
+  );
+
+  doc.fillColor(C.muted).font('Helvetica-Bold').fontSize(7.5).text('Geoverification:', 310, geoY + 44);
+  doc.fillColor(C.slate).font('Helvetica-Bold').fontSize(8).text(
+    evidenceLat && evidenceLng ? 'LOCATION ASSOCIATED WITH CAPTURE' : 'REQUIRES REVIEW',
+    385, geoY + 44
+  );
+
+  // Row 3
+  doc.fillColor(C.muted).font('Helvetica-Bold').fontSize(7.5).text('GPS Accuracy:', 55, geoY + 60);
+  doc.fillColor(C.slate).font('Helvetica').fontSize(8).text(
+    evidenceAccuracy ? `±${Math.round(evidenceAccuracy)} metres` : 'Unavailable',
+    135, geoY + 60
+  );
+
+  doc.fillColor(C.muted).font('Helvetica-Bold').fontSize(7.5).text('Capture Time:', 310, geoY + 60);
+  doc.fillColor(C.slate).font('Helvetica').fontSize(8).text(
+    new Date(evidenceTime).toLocaleString('en-IN'),
+    385, geoY + 60
+  );
+
+  // 6. Photo Evidence Section
+  const photoSecY = 330;
+  doc.fillColor(C.navy).font('Helvetica-Bold').fontSize(10).text('PHOTO EVIDENCE', 40, photoSecY);
+  doc.moveTo(135, photoSecY + 5).lineTo(555, photoSecY + 5).lineWidth(1).strokeColor(C.navy).stroke();
+
+  const imgBoxX = 40;
+  const imgBoxY = photoSecY + 14;
+  const imgBoxW = 515;
+  const imgBoxH = 264;
+
+  filledRect(doc, imgBoxX, imgBoxY, imgBoxW, imgBoxH, 6, C.rowA, C.border);
+
+  const imgSource = resolveImagePath(report);
+
+  if (imgSource) {
+    try {
+      if (imgSource.startsWith('http')) {
+        const imgRes = await axios.get(imgSource, { responseType: 'arraybuffer', timeout: 8000 });
+        const imgBuffer = Buffer.from(imgRes.data);
+        doc.image(imgBuffer, imgBoxX + 6, imgBoxY + 6, {
+          fit: [imgBoxW - 12, imgBoxH - 12],
+          align: 'center',
+          valign: 'center'
+        });
+      } else if (fs.existsSync(imgSource)) {
+        doc.image(imgSource, imgBoxX + 6, imgBoxY + 6, {
+          fit: [imgBoxW - 12, imgBoxH - 12],
+          align: 'center',
+          valign: 'center'
+        });
+      } else {
+        doc.fillColor(C.muted).font('Helvetica').fontSize(9).text(
+          'Photo file stored at remote location. Preview unavailable offline.',
+          imgBoxX + 20, imgBoxY + 120, { width: imgBoxW - 40, align: 'center' }
+        );
+      }
+    } catch (imgErr) {
+      console.warn(`PDF Image load warning for report ${reportId}: ${imgErr.message}`);
+      doc.fillColor(C.muted).font('Helvetica').fontSize(9).text(
+        'Evidence photo loaded via secure cloud URL. Preview could not be embedded.',
+        imgBoxX + 20, imgBoxY + 120, { width: imgBoxW - 40, align: 'center' }
+      );
+    }
+  } else {
+    doc.fillColor(C.muted).font('Helvetica').fontSize(9).text(
+      'No photographic evidence was attached to this report.',
+      imgBoxX + 20, imgBoxY + 120, { width: imgBoxW - 40, align: 'center' }
+    );
+  }
+
+  // 7. CVI / ML Assessment Policy
+  const policyY = 614;
+  filledRect(doc, 40, policyY, 515, 84, 6, '#FDF8ED', C.goldLight);
+
+  doc.fillColor(C.navy).font('Helvetica-Bold').fontSize(9.5).text(
+    'COMPUTER VISION INSPECTION (CVI) / ML ASSESSMENT', 55, policyY + 10
+  );
+
+  doc.fillColor(C.slate).font('Helvetica').fontSize(8).text(
+    'The SafeStreet evidence image is processed through the platform ML / computer-vision pipeline for automated hazard classification and severity assessment. ML results are decision-support information and do not replace municipal inspection or official engineering assessment.',
+    55, policyY + 26, { width: 485, lineGap: 2 }
+  );
+
+  doc.fillColor(C.green).font('Helvetica-Bold').fontSize(8).text(
+    `CVI STATUS: ${cviStatus}   |   ML SEVERITY: ${String(mlSeverity).toUpperCase()} (Score: ${severityScore})   |   CONFIDENCE: ${mlConfidence}`,
+    55, policyY + 64, { width: 485 }
+  );
+
+  // 8. Footer with Shield
+  const fY = 708;
+  filledRect(doc, 40, fY, 515, 40, 6, C.rowA, C.border);
+  drawFooterShield(doc, 56, fY + 9);
+
+  doc.fillColor(C.slate).font('Helvetica').fontSize(8).text(
+    'This official evidence dossier has been auto-generated by SafeStreet Civic Infrastructure Platform.',
+    86, fY + 11, { lineBreak: false }
+  );
+  doc.fillColor(C.muted).font('Helvetica').fontSize(7.5).text(
+    'Tamper-evident record secured via live field geoverification. All records are verifiable in municipal audit.',
+    86, fY + 23, { lineBreak: false }
+  );
+
+  doc.end();
+
+  return new Promise((resolve, reject) => {
+    stream.on('finish', async () => {
+      // Check Cloudinary configuration
+      const hasCloudinary = Boolean(
+        process.env.CLOUDINARY_CLOUD_NAME &&
+        process.env.CLOUDINARY_API_KEY &&
+        process.env.CLOUDINARY_API_SECRET
+      );
+
+      if (!hasCloudinary) {
+        console.warn(`⚠️ Cloudinary is not configured; cannot persist permanent public Evidence PDF URL on Render ephemeral filesystem for report ${reportId}.`);
+        // Clean up temporary local file
+        fs.unlink(filePath, () => {});
+        return resolve({
+          reportId,
+          pdfUrl: null,
+          relPath: null,
+          filename,
+          locationName,
+          error: 'Cloud storage (Cloudinary) is not configured'
+        });
+      }
+
+      try {
+        const cloudinary = require('./cloudinary');
+        const uploadResult = await cloudinary.uploader.upload(filePath, {
+          folder: 'safestreet/evidence_pdfs',
+          resource_type: 'auto',
+          public_id: `evidence_${reportId}`,
+        });
+
+        // Unlink local temporary file after successful Cloudinary upload
+        fs.unlink(filePath, () => {});
+        console.log(`☁️  Evidence PDF uploaded to Cloudinary: ${uploadResult.secure_url}`);
+
+        return resolve({
+          reportId,
+          pdfUrl:  uploadResult.secure_url,
+          relPath: uploadResult.secure_url,
+          filename,
+          locationName,
+        });
+      } catch (uploadErr) {
+        console.error(`⚠️ Cloudinary Evidence PDF upload failed for ${reportId}: ${uploadErr.message}`);
+        // Clean up temporary file; do NOT treat ephemeral local file as a permanent public download URL
+        fs.unlink(filePath, () => {});
+        return resolve({
+          reportId,
+          pdfUrl: null,
+          relPath: null,
+          filename,
+          locationName,
+          error: `Cloud storage upload failed: ${uploadErr.message}`
+        });
+      }
+    });
+
+    stream.on('error', (err) => {
+      console.error(`❌ PDF stream error for report ${reportId}:`, err.message);
+      fs.unlink(filePath, () => {});
+      reject(err);
+    });
+  });
+}
+
+module.exports = {
+  generateComplaintPDF,
+  generateReportEvidencePDF,
+};
